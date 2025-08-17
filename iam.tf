@@ -25,7 +25,7 @@ resource "google_artifact_registry_repository_iam_member" "repository_iam" {
 
 # Создание сервисного аккаунта для функции
 resource "google_service_account" "function_sa" {
-  account_id   = "my-function-sa"
+  account_id   = "gcp-chat-bot-serverless-sa"
   display_name = "Service Account for Cloud Function"
 }
 
@@ -51,6 +51,15 @@ resource "google_project_iam_member" "parameter_viewer" {
 resource "google_project_iam_member" "project_viewer" {
   project = var.project
   role    = "roles/viewer"
+  member  = "serviceAccount:${google_service_account.function_sa.email}"
+  depends_on = [
+    google_service_account.function_sa
+  ]
+}
+
+resource "google_project_iam_member" "vertex_api" {
+  project = var.project
+  role    = "roles/aiplatform.user"
   member  = "serviceAccount:${google_service_account.function_sa.email}"
   depends_on = [
     google_service_account.function_sa
