@@ -15,6 +15,10 @@ from anthropic import Anthropic
 from loguru import logger
 from google.cloud import storage
 from google.cloud import parametermanager_v1
+from google.genai import types
+from google.genai import Client as Gemini
+from xai_sdk import Client as Xai
+from xai_sdk.chat import user, assistant
 
 from telegram.ext import (
     Dispatcher,
@@ -31,20 +35,32 @@ BUCKET_NAME = os.environ.get("CONVERSATION_BUCKET")
 GCP_REGION = os.environ.get("GCP_REGION")
 GCP_PROJECT = os.environ.get("GCP_PROJECT")
 parameter_manager_client = parametermanager_v1.ParameterManagerClient(
-    client_options={"api_endpoint": f"parametermanager.{GCP_REGION}.rep.googleapis.com"})
-allowed_models_openai = json.loads(
+    client_options={"api_endpoint": f"parametermanager.{GCP_REGION}.rep.googleapis.com"}
+)
+allowed_models_json = json.loads(
     parameter_manager_client.get_parameter_version(
-        name=f"projects/{GCP_PROJECT}/locations/{GCP_REGION}/parameters/allowed_models_openai/versions/v1").payload.data)
-allowed_models_antropic = json.loads(
-    parameter_manager_client.get_parameter_version(
-        name=f"projects/{GCP_PROJECT}/locations/{GCP_REGION}/parameters/allowed_models_antropic/versions/v1").payload.data)
-allowed_models = allowed_models_openai + allowed_models_antropic
+            name=f"projects/{GCP_PROJECT}/locations/{GCP_REGION}/parameters/allowed_models/versions/v1"
+    ).payload.data
+)
+allowed_models_openai = allowed_models_json["openai"]
+allowed_models_antropic = allowed_models_json["antropic"]
+allowed_models_google = allowed_models_json["google"]
+allowed_models_xai = allowed_models_json["xai"]
+allowed_models = allowed_models_openai + allowed_models_antropic + allowed_models_google + allowed_models_xai
 # Telegram bot
 bot = Bot(token=TOKEN)
 dispatcher = Dispatcher(bot, None, use_context=True)
 storage_client = storage.Client()
-client = OpenAI()
-client_anthropic = Anthropic()
+if allowed_models_openai:
+    client = OpenAI()
+if allowed_models_antropic:
+    client_anthropic = Anthropic()
+if allowed_models_google:
+    client_googleai = Gemini(
+        vertexai=True, project=GCP_PROJECT, location=GCP_REGION
+    )
+if allowed_models_xai:
+    client_xai = Xai()
 
 def last_conversation(file_key) -> float:
     """ 
@@ -157,38 +173,6 @@ def split_markdown_message_safe(message: str, max_len: int = 4096) -> list:
 
     return chunks
 
-def get_json_parameter(parameter_id: str, version: str) -> dict:
-    """
-    Получает JSON-параметр из Parameter Manager по версии
-    
-    Args:
-        parameter_id: ID параметра
-        version: версия параметра
-    
-    Returns:
-        dict: Данные из JSON-параметра
-    """
-    parameter_manager_client = parametermanager_v1.ParameterManagerClient()
-
-    # Формируем правильный путь к параметру
-    parameter_name = f"projects/{GCP_PROJECT}/locations/{GCP_REGION}/parameters/{parameter_id}/versions/{version}"
-
-    try:
-        # Получаем параметр по версии
-        request = parametermanager_v1.GetParameterVersionRequest(
-            name=parameter_name
-        )
-        parameter_version = parameter_manager_client.get_parameter_version(request=request)
-
-        # Преобразуем строковое значение в JSON
-        json_data = json.loads(parameter_version.value.string_value)
-
-        return json_data
-    except json.JSONDecodeError as e:
-        raise ValueError(f"Параметр не является корректным JSON: {e}") from e
-    except Exception as e:
-        raise Exception(f"Ошибка при получении параметра: {e}") from e
-
 def ask_neural(text, effective_user) -> str:
     """    
     Функция для отправки запроса к нейросети и получения ответа.
@@ -205,17 +189,23 @@ def ask_neural(text, effective_user) -> str:
     else:
         msgs = []
         model = "gpt-5-nano"
+    history = []
     if model in allowed_models_openai:
-        msgs.append({"role": "user", "content":[{"type": "input_text", "text": text}]})
+        msgs.append({"role": "user", "content": text})
+        for msg in msgs:
+            if msg["role"]=="user":
+                history.append({"role": "user", 
+                                "content":[{"type": "input_text", "text": msg["content"]}]})
+            history.append({"role": "assistant",
+                            "content":[{"type": "output_text","text": msg["content"]}]})
         chat = client.responses.create(
             model=model,
-            input=msgs,
+            input=history,
         )
         #logger.info(f"Response: {chat}")
-        msgs.append({"role": "assistant",
-                     "content":[{"type": "output_text","text": chat.output_text}] })
+        msgs.append({"role": "assistant", "content": chat.output_text})
         save_file(model, msgs, effective_user)
-        return chat.output_text
+        return str(chat.output_text)
     if model in allowed_models_antropic:
         msgs.append({"role": "user", "content": text})
         chat = client_anthropic.messages.create(
@@ -226,6 +216,32 @@ def ask_neural(text, effective_user) -> str:
         msgs.append({"role": "assistant", "content": str(chat.content[0].text)})
         save_file(model, msgs, effective_user)
         return str(chat.content[0].text)
+    if model in allowed_models_google:
+        for msg in msgs:
+            if msg["role"]=="user":
+                history.append(types.UserContent(parts=[types.Part(text=msg["content"])]))
+            history.append(types.Content(parts=[types.Part(text=msg["content"])],role="model"))
+        msgs.append({"role": "user", "content": text})
+        chat = client_googleai.chats.create(
+            model=model,
+            history=history)
+        response = chat.send_message(text)
+        msgs.append({"role": "assistant", "content": response.text})
+        save_file(model, msgs, effective_user)
+        return str(response.text)
+    if model in allowed_models_xai:
+        msgs.append({"role": "user", "content": text})
+        for msg in msgs:
+            if msg["role"]=="user":
+                history.append(user(msg["content"]))
+            history.append(assistant(msg["content"]))
+        chat = client_xai.chat.create(
+            model=model,
+            messages=history
+        )
+        response = chat.sample()
+        msgs.append({"role": "assistant", "content": response.content})
+        return str(response.content)
     return ""
 
 #####################
@@ -582,9 +598,9 @@ def handle_photo(update, context):
                 text=message,
                 parse_mode=ParseMode.MARKDOWN,
             )
-        else:
+            return
+        if model in allowed_models_openai:
             if model!="gpt-3.5-turbo":
-# Создаем мультимодальное сообщение
                 current_msg = {
                     "role": "user",
                     "content": [
@@ -622,9 +638,17 @@ def handle_photo(update, context):
                     text="gpt-3.5-turbo не поддерживает мультимодальность",
                     parse_mode=ParseMode.MARKDOWN,
                 )
+            return
+        context.bot.send_message(
+            chat_id=chat_id,
+            text="Выбранная вами модель пока поддерживает мультимодальность в боте",
+            parse_mode=ParseMode.MARKDOWN,
+        )
+        return
     except Exception as e:
         logger.error(f"Error processing image: {str(e)}")
         update.message.reply_text(f"Ошибка при обработке изображения: `{str(e)}`")
+        return
 
 ############################
 # Lambda Handler functions #
