@@ -1,6 +1,6 @@
 # Cloud Function (2nd gen)
 resource "google_cloudfunctions2_function" "telegram_bot_function" {
-  name        = "my-function"
+  name        = "gcp-chat-bot-serverless"
   location    = var.region
   description = "Telegram bot function for handling messages and send requests to AI models"
 
@@ -17,7 +17,7 @@ resource "google_cloudfunctions2_function" "telegram_bot_function" {
   }
 
   service_config {
-    max_instance_count = 5
+    max_instance_count = 10
     min_instance_count = 0
     available_memory   = "256Mi"
     timeout_seconds    = 60
@@ -38,6 +38,12 @@ resource "google_cloudfunctions2_function" "telegram_bot_function" {
       key        = "TELEGRAM_TOKEN"
       project_id = var.project
       secret     = "TELEGRAM_TOKEN"
+      version    = "latest"
+    }
+    secret_environment_variables {
+      key        = "XAI_API_KEY"
+      project_id = var.project
+      secret     = "XAI_API_KEY"
       version    = "latest"
     }
     environment_variables = {
