@@ -48,29 +48,5 @@ resource "google_storage_bucket" "conversation_bucket" {
   name     = var.conversation_bucket
   location = var.region
   uniform_bucket_level_access = true
-  force_destroy = true
-}
-
-# bucket для хранения terraform state
-resource "google_storage_bucket" "state_bucket" {
-  name     = "terraform-state-bucket-${var.project}"
-  location = var.region
-  uniform_bucket_level_access = true
-  force_destroy = true
-}
-
-resource "local_file" "default" {
-  file_permission = "0644"
-  filename        = "${path.module}/backend.tf"
-
-  # You can store the template in a file and use the templatefile function for
-  # more modularity, if you prefer, instead of storing the template inline as
-  # we do here.
-  content = <<-EOT
-  terraform {
-    backend "gcs" {
-      bucket = "${google_storage_bucket.state_bucket.name}"
-    }
-  }
-  EOT
+  force_destroy = false
 }
