@@ -1,0 +1,6 @@
+.terraform*
+.venv
+*.tfstate*
+function.zip
+*.tfvars
+backend.tf
