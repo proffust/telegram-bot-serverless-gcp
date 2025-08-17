@@ -1,8 +1,9 @@
 requests==2.32.4
-httpx==0.27.2
 loguru==0.7.3
 openai==1.99.9
 anthropic==0.63.0
 python-telegram-bot==13.11
+google-genai==1.30.0
 google-cloud-storage==3.3.0
 google-cloud-parametermanager==0.1.5
+xai-sdk==1.0.1
