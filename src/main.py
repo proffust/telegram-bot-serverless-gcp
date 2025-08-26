@@ -39,7 +39,7 @@ parameter_manager_client = parametermanager_v1.ParameterManagerClient(
 )
 allowed_models_json = json.loads(
     parameter_manager_client.get_parameter_version(
-            name=f"projects/{GCP_PROJECT}/locations/{GCP_REGION}/parameters/allowed_models/versions/v1"
+        name=f"projects/{GCP_PROJECT}/locations/{GCP_REGION}/parameters/allowed_models/versions/v1"
     ).payload.data
 )
 allowed_models_openai = allowed_models_json["openai"]
@@ -93,7 +93,7 @@ def load_s3_object(effective_user) -> dict:
         blob = bucket.blob(file_name)
         file_content = blob.download_as_string()
         return json.loads(file_content)
-    except Exception as e:
+    except Exception as e: #pylint: disable=W0718
         return {"statusCode": 400, "body": str(e)}
 
 def save_file(model, messages, effective_user) -> None | dict:
@@ -108,7 +108,7 @@ def save_file(model, messages, effective_user) -> None | dict:
         blob = bucket.blob(file_name)
         blob.upload_from_string(json.dumps(content),content_type='application/json')
         return None
-    except Exception as e:
+    except Exception as e: #pylint: disable=W0718
         return {"statusCode": 400, "body": str(e)}
 
 def send_typing_action(func):
@@ -173,10 +173,11 @@ def split_markdown_message_safe(message: str, max_len: int = 4096) -> list:
 
     return chunks
 
-def ask_neural(text, effective_user) -> str:
-    """    
-    Функция для отправки запроса к нейросети и получения ответа.
-    Использует OpenAI или Anthropic в зависимости от модели.
+def load_models_and_msgs(effective_user):
+    """
+    Функция для загрузки модели и сообщений из S3.
+    Возвращает модель и список сообщений.
+    Если файл не существует, возвращает модель по умолчанию и пустой список сообщений.
     """
     if file_exists_in_s3(f'{effective_user}.json'):
         content = load_s3_object(effective_user)
@@ -189,6 +190,14 @@ def ask_neural(text, effective_user) -> str:
     else:
         msgs = []
         model = "gpt-5-nano"
+    return model, msgs
+
+def ask_neural(text, effective_user) -> str:
+    """    
+    Функция для отправки запроса к нейросети и получения ответа.
+    Использует OpenAI или Anthropic в зависимости от модели.
+    """
+    model, msgs = load_models_and_msgs(effective_user)
     history = []
     if model in allowed_models_openai:
         msgs.append({"role": "user", "content": text})
@@ -198,7 +207,7 @@ def ask_neural(text, effective_user) -> str:
                                 "content":[{"type": "input_text", "text": msg["content"]}]})
             history.append({"role": "assistant",
                             "content":[{"type": "output_text","text": msg["content"]}]})
-        chat = client.responses.create(
+        chat = client.responses.create( #pylint: disable=E0606
             model=model,
             input=history,
         )
@@ -208,7 +217,7 @@ def ask_neural(text, effective_user) -> str:
         return str(chat.output_text)
     if model in allowed_models_antropic:
         msgs.append({"role": "user", "content": text})
-        chat = client_anthropic.messages.create(
+        chat = client_anthropic.messages.create( #pylint: disable=E0606
             model=model,
             max_tokens=2000,
             messages=msgs
@@ -222,7 +231,7 @@ def ask_neural(text, effective_user) -> str:
                 history.append(types.UserContent(parts=[types.Part(text=msg["content"])]))
             history.append(types.Content(parts=[types.Part(text=msg["content"])],role="model"))
         msgs.append({"role": "user", "content": text})
-        chat = client_googleai.chats.create(
+        chat = client_googleai.chats.create( #pylint: disable=E0606
             model=model,
             history=history)
         response = chat.send_message(text)
@@ -235,7 +244,7 @@ def ask_neural(text, effective_user) -> str:
             if msg["role"]=="user":
                 history.append(user(msg["content"]))
             history.append(assistant(msg["content"]))
-        chat = client_xai.chat.create(
+        chat = client_xai.chat.create( #pylint: disable=E0606
             model=model,
             messages=history
         )
@@ -344,7 +353,7 @@ def button(update, context) -> None:
         chat_id = update.callback_query.message.chat.id
         try:
             message = ask_neural(chat_text, chat_id)
-        except Exception as e:
+        except Exception as e: #pylint: disable=W0718
             context.bot.send_message(
                 chat_id=chat_id,
                 text=f"Ошибка при обработке сообщения: `{str(e)}`",
@@ -503,7 +512,7 @@ def process_message(update, context):
             return
     try:
         message = ask_neural(chat_text, chat_id)
-    except Exception as e:
+    except Exception as e: #pylint: disable=W0718
         context.bot.send_message(
             chat_id=chat_id,
             text=f"Ошибка при обработке сообщения: `{str(e)}`",
@@ -519,7 +528,7 @@ def process_message(update, context):
                     text=chunk,
                     parse_mode=ParseMode.MARKDOWN_V2
                 )
-        except Exception as e:
+        except Exception as e: #pylint: disable=W0718
             context.bot.send_message(
                 chat_id=chat_id,
                 text=f"Ошибка при отправке сообщения: `{str(e)}`",
@@ -645,7 +654,7 @@ def handle_photo(update, context):
             parse_mode=ParseMode.MARKDOWN,
         )
         return
-    except Exception as e:
+    except Exception as e: #pylint: disable=W0718
         logger.error(f"Error processing image: {str(e)}")
         update.message.reply_text(f"Ошибка при обработке изображения: `{str(e)}`")
         return
@@ -674,8 +683,8 @@ def message_handler(event):
 
     try:
         dispatcher.process_update(Update.de_json(event.get_json(force=True), bot))
-    except Exception as e:
-        print(e)
+    except Exception as e: #pylint: disable=W0718
+        logger.error(f"Error processing image: {str(e)}")
         return {"statusCode": 500}
 
     return {"statusCode": 200}
