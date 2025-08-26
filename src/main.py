@@ -46,10 +46,16 @@ allowed_models_openai = allowed_models_json["openai"]
 allowed_models_antropic = allowed_models_json["antropic"]
 allowed_models_google = allowed_models_json["google"]
 allowed_models_xai = allowed_models_json["xai"]
-allowed_models = allowed_models_openai + allowed_models_antropic + allowed_models_google + allowed_models_xai
+allowed_models = (allowed_models_openai + allowed_models_antropic +
+                  allowed_models_google + allowed_models_xai)
 # Telegram bot
-bot = Bot(token=TOKEN)
-dispatcher = Dispatcher(bot, None, use_context=True)
+if TOKEN is not None:
+    bot = Bot(token=TOKEN)
+    dispatcher = Dispatcher(bot=bot, update_queue=None, use_context=True)
+
+else:
+    logger.error("TELEGRAM_TOKEN environment variable not set")
+    raise ValueError("TELEGRAM_TOKEN environment variable not set")
 storage_client = storage.Client()
 if allowed_models_openai:
     client = OpenAI()
@@ -71,7 +77,9 @@ def last_conversation(file_key) -> float:
     blob = bucket.blob(file_key)
 
     blob.reload()  # Загружает данные о blob, включая время последнего изменения
-    return blob.updated.timestamp()  # Возвращает время последнего изменения файла
+    if blob.updated is not None:
+        return blob.updated.timestamp()  # Возвращает время последнего изменения файла
+    return 0.0
 
 def file_exists_in_s3(file_key) -> bool:
     """ 
@@ -173,7 +181,7 @@ def split_markdown_message_safe(message: str, max_len: int = 4096) -> list:
 
     return chunks
 
-def load_models_and_msgs(effective_user):
+def load_models_and_msgs(effective_user) -> tuple:
     """
     Функция для загрузки модели и сообщений из S3.
     Возвращает модель и список сообщений.
@@ -203,7 +211,7 @@ def ask_neural(text, effective_user) -> str:
         msgs.append({"role": "user", "content": text})
         for msg in msgs:
             if msg["role"]=="user":
-                history.append({"role": "user", 
+                history.append({"role": "user",
                                 "content":[{"type": "input_text", "text": msg["content"]}]})
             history.append({"role": "assistant",
                             "content":[{"type": "output_text","text": msg["content"]}]})
@@ -402,8 +410,11 @@ def generate_image(update, context):
     text = update.message.text[7:]
     if text.find("model:")!=-1:
         match = re.search(r'model\:([^\s]+)\s(.+)', text)
-        model = match.group(1)
-        prompt = match.group(2)
+        if match is not None:
+            model = match.group(1)
+            prompt = match.group(2)
+        else:
+            return
     else:
         model = "dall-e-2"
         prompt = text
@@ -415,10 +426,11 @@ def generate_image(update, context):
             quality="standard",
             n=1,
         )
-        context.bot.send_photo(chat_id=update.effective_chat.id,
-                               photo=response.data[0].url,
-                               caption=response.data[0].revised_prompt
-                            )
+        if response.data is not None:
+            context.bot.send_photo(chat_id=update.effective_chat.id,
+                                   photo=response.data[0].url,
+                                   caption=response.data[0].revised_prompt
+                                )
     else:
         context.bot.send_message(
             chat_id=update.effective_chat.id,
@@ -556,17 +568,7 @@ def handle_photo(update, context):
     caption = update.message.caption or "Опиши это изображение."
 
     # Загружаем предыдущую историю сообщений
-    if file_exists_in_s3(f'{effective_user}.json'):
-        content = load_s3_object(effective_user)
-        try:
-            msgs = content["msgs"]
-            model = content["model"]
-        except (KeyError, TypeError):
-            model = "gpt-5-nano"
-            msgs = content
-    else:
-        msgs = []
-        model = "gpt-5-nano"
+    model, msgs = load_models_and_msgs(effective_user)
 
     # Используем только это сообщение для текущего запроса
     try:
@@ -596,7 +598,6 @@ def handle_photo(update, context):
                 max_tokens=2000,
                 messages=msgs
             )
-
             message = chat.content[0].text
 
             # Сохраняем в историю текстовое представление запроса и ответа
