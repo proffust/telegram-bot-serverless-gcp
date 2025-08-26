@@ -19,7 +19,7 @@ resource "google_cloudfunctions2_function" "telegram_bot_function" {
   service_config {
     max_instance_count = 10
     min_instance_count = 0
-    available_memory   = "256Mi"
+    available_memory   = "384Mi"
     timeout_seconds    = 60
     service_account_email = google_service_account.function_sa.email
     secret_environment_variables {
