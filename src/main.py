@@ -18,7 +18,7 @@ from google.cloud import parametermanager_v1
 from google.genai import types
 from google.genai import Client as Gemini
 from xai_sdk import Client as Xai
-from xai_sdk.chat import user, assistant
+from xai_sdk.chat import user, assistant, image
 
 from telegram.ext import (
     Dispatcher,
@@ -138,6 +138,7 @@ def escape_markdown_v2(text: str) -> str:
     # Экранируем специальные символы MarkdownV2
     escape_chars = r'_*[]()~`>#+-=|{}.!'
     return re.sub(f"([{re.escape(escape_chars)}])", r'\\\1', text)
+
 def split_markdown_message_safe(message: str, max_len: int = 4096) -> list:
     """
     Разбивает сообщение на части, сохраняя целостность код-блоков
@@ -227,7 +228,7 @@ def ask_neural(text, effective_user) -> str:
         msgs.append({"role": "user", "content": text})
         chat = client_anthropic.messages.create( #pylint: disable=E0606
             model=model,
-            max_tokens=2000,
+            max_tokens=8192,
             messages=msgs
         )
         msgs.append({"role": "assistant", "content": str(chat.content[0].text)})
@@ -274,14 +275,7 @@ def clear_context(update, context):
         effective_user = update.message.chat_id
     except AttributeError:
         effective_user = update.callback_query.message.chat.id
-    if file_exists_in_s3(f'{effective_user}.json'):
-        content = load_s3_object(effective_user)
-        try:
-            model = content["model"]
-        except (KeyError, TypeError):
-            model = "gpt-5-nano"
-    else:
-        model = "gpt-5-nano"
+    model, _ = load_models_and_msgs(effective_user)
     save_file(model,[],effective_user)
     context.bot.send_message(
         chat_id=effective_user,
@@ -300,6 +294,7 @@ def send_greeting(update, context):
         text=message,
         parse_mode=ParseMode.MARKDOWN,
     )
+
 @send_typing_action
 def send_help(update, context):
     """
@@ -325,15 +320,8 @@ def set_model(update, context):
     except IndexError:
         model = ""
     if model in allowed_models:
-        if file_exists_in_s3(f'{effective_user}.json'):
-            content = load_s3_object(effective_user)
-            try:
-                msgs = content["msgs"]
-            except (KeyError, TypeError):
-                msgs = content
-            save_file(model, msgs, effective_user)
-        else:
-            save_file(model, [], effective_user)
+        _, msgs = load_models_and_msgs(effective_user)
+        save_file(model, msgs, effective_user)
         context.bot.send_message(
             chat_id=update.message.chat_id,
             text=f'Сохранено в настройки использование модели {model}',
@@ -376,6 +364,7 @@ def button(update, context) -> None:
                     text=chunk,
                     parse_mode=ParseMode.MARKDOWN_V2
                 )
+
 @send_typing_action
 def get_model(update, context):
     """
@@ -383,23 +372,13 @@ def get_model(update, context):
     Если модель сохранена в S3, отправляет её пользователю, иначе сообщает о модели по умолчанию.
     """
     effective_user = update.message.chat_id
-    if file_exists_in_s3(f'{effective_user}.json'):
-        content = load_s3_object(effective_user)
-        try:
-            model = content["model"]
-        except (KeyError, TypeError):
-            model = "gpt-5-nano"
-        context.bot.send_message(
-            chat_id=update.message.chat_id,
-            text=f'Считано из настроек использование модели {model}',
-            parse_mode=ParseMode.MARKDOWN,
-        )
-    else:
-        context.bot.send_message(
-            chat_id=update.message.chat_id,
-            text='По умолчанию используется модель gpt-5-nano',
-            parse_mode=ParseMode.MARKDOWN,
-        )
+    model, _ = load_models_and_msgs(effective_user)
+    context.bot.send_message(
+        chat_id=update.message.chat_id,
+        text=f'Считано из настроек использование модели {model}',
+        parse_mode=ParseMode.MARKDOWN,
+    )
+
 @send_typing_action
 def generate_image(update, context):
     """
@@ -419,24 +398,51 @@ def generate_image(update, context):
         model = "dall-e-2"
         prompt = text
     if bool(prompt):
-        response = client.images.generate(
-            model=model,
-            prompt=prompt,
-            size="1024x1024",
-            quality="standard",
-            n=1,
+        if model in ["dall-e-2", "dall-e-3"]:
+            response = client.images.generate(
+                model=model,
+                prompt=prompt,
+            )
+            if response.data is not None:
+                context.bot.send_photo(chat_id=update.effective_chat.id,
+                                    photo=response.data[0].url,
+                                    caption=response.data[0].revised_prompt
+                                    )
+            return
+        if model in ["imagen-4.0-generate-001"]:
+            response = client_googleai.models.generate_images(
+                model="imagen-4.0-generate-001",
+                prompt=prompt,
+            )
+            if response.generated_images[0].image.image_bytes is not None:
+                context.bot.send_photo(chat_id=update.effective_chat.id,
+                    photo=response.generated_images[0].image.image_bytes,
+                )
+            return
+        if model in ["grok-2-image"]:
+            response = client_xai.image.sample(
+                model=model,
+                prompt=prompt,
+            )
+            if response.url is not None:
+                context.bot.send_photo(chat_id=update.effective_chat.id,
+                                    photo=response.url,
+                                    caption=response.prompt
+                                    )
+            return
+        context.bot.send_message(
+            chat_id=update.effective_chat.id,
+            text="Выбранная модель генерации изображений не поддерживается",
+            parse_mode=ParseMode.MARKDOWN,
         )
-        if response.data is not None:
-            context.bot.send_photo(chat_id=update.effective_chat.id,
-                                   photo=response.data[0].url,
-                                   caption=response.data[0].revised_prompt
-                                )
+        return
     else:
         context.bot.send_message(
             chat_id=update.effective_chat.id,
             text="Промпт не может быть пустым",
             parse_mode=ParseMode.MARKDOWN,
         )
+        return
 
 @send_typing_action
 def unknown_command(update, context):
@@ -502,7 +508,6 @@ def process_voice_message(update, context):
         parse_mode=ParseMode.MARKDOWN,
     )
 
-
 @send_typing_action
 def process_message(update, context):
     """
@@ -546,6 +551,7 @@ def process_message(update, context):
                 text=f"Ошибка при отправке сообщения: `{str(e)}`",
                 parse_mode=ParseMode.MARKDOWN,
             )
+
 @send_typing_action
 def handle_photo(update, context):
     """
@@ -648,6 +654,44 @@ def handle_photo(update, context):
                     text="gpt-3.5-turbo не поддерживает мультимодальность",
                     parse_mode=ParseMode.MARKDOWN,
                 )
+            return
+        if model in allowed_models_google:
+            response = client_googleai.models.generate_content(
+                model=model,
+                contents=[
+                    caption,
+                    types.Part.from_bytes(data=image_data, mime_type="image/jpeg"),
+                ],
+            )
+            message = response.text
+            # Сохраняем в историю текстовое представление запроса и ответа
+            msgs.append({"role": "assistant",
+                            "content":[{"type": "output_text","text": message}]})
+            save_file(model, msgs, effective_user)
+            context.bot.send_message(
+                chat_id=chat_id,
+                text=message,
+                parse_mode=ParseMode.MARKDOWN,
+            )
+            return
+        if model in allowed_models_xai:
+            chat = client_xai.chat.create(model=model)
+            chat.append(
+                user(
+                    caption,
+                    image(image_url=f"data:image/jpeg;base64,{base64_image}", detail="auto"),
+                )
+            )
+            response = chat.sample()
+            message = response.content
+            msgs.append({"role": "assistant",
+                "content":[{"type": "output_text","text": message}]})
+            save_file(model, msgs, effective_user)
+            context.bot.send_message(
+                chat_id=chat_id,
+                text=message,
+                parse_mode=ParseMode.MARKDOWN,
+            )
             return
         context.bot.send_message(
             chat_id=chat_id,
