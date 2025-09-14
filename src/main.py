@@ -12,10 +12,11 @@ import requests
 
 from openai import OpenAI
 from anthropic import Anthropic
+from anthropic.types import TextBlock
 from loguru import logger
 from google.cloud import storage
 from google.cloud import parametermanager_v1
-from google.genai import types
+from google.genai.types import Content, Part, UserContent, Image
 from google.genai import Client as Gemini
 from xai_sdk import Client as Xai
 from xai_sdk.chat import user, assistant, image
@@ -51,7 +52,7 @@ allowed_models = (allowed_models_openai + allowed_models_antropic +
 # Telegram bot
 if TOKEN is not None:
     bot = Bot(token=TOKEN)
-    dispatcher = Dispatcher(bot=bot, update_queue=None, use_context=True)
+    dispatcher = Dispatcher(bot, None, use_context=True) # type: ignore[reportCallIssue]
 
 else:
     logger.error("TELEGRAM_TOKEN environment variable not set")
@@ -231,14 +232,18 @@ def ask_neural(text, effective_user) -> str:
             max_tokens=8192,
             messages=msgs
         )
-        msgs.append({"role": "assistant", "content": str(chat.content[0].text)})
-        save_file(model, msgs, effective_user)
-        return str(chat.content[0].text)
+        if isinstance(chat.content[0], TextBlock):
+            answer = chat.content[0].text
+            msgs.append({"role": "assistant", "content": answer})
+            save_file(model, msgs, effective_user)
+        else:
+            answer = ""
+        return answer
     if model in allowed_models_google:
         for msg in msgs:
             if msg["role"]=="user":
-                history.append(types.UserContent(parts=[types.Part(text=msg["content"])]))
-            history.append(types.Content(parts=[types.Part(text=msg["content"])],role="model"))
+                history.append(UserContent(parts=[Part(text=msg["content"])]))
+            history.append(Content(parts=[Part(text=msg["content"])],role="model"))
         msgs.append({"role": "user", "content": text})
         chat = client_googleai.chats.create( #pylint: disable=E0606
             model=model,
@@ -414,10 +419,13 @@ def generate_image(update, context):
                 model="imagen-4.0-generate-001",
                 prompt=prompt,
             )
-            if response.generated_images[0].image.image_bytes is not None:
-                context.bot.send_photo(chat_id=update.effective_chat.id,
-                    photo=response.generated_images[0].image.image_bytes,
-                )
+            if response.generated_images is not None:
+                if isinstance(response.generated_images[0].image, Image):
+                    context.bot.send_photo(chat_id=update.effective_chat.id,
+                        photo=response.generated_images[0].image.image_bytes,
+                    )
+                    return
+            logger.error("Error generate image from Google")
             return
         if model in ["grok-2-image"]:
             response = client_xai.image.sample(
@@ -604,16 +612,15 @@ def handle_photo(update, context):
                 max_tokens=2000,
                 messages=msgs
             )
-            message = chat.content[0].text
-
-            # Сохраняем в историю текстовое представление запроса и ответа
-            msgs.append({"role": "assistant", "content": message})
-            save_file(model, msgs, effective_user)
-            context.bot.send_message(
-                chat_id=chat_id,
-                text=message,
-                parse_mode=ParseMode.MARKDOWN,
-            )
+            if isinstance(chat.content[0], TextBlock):
+                message = chat.content[0].text
+                msgs.append({"role": "assistant", "content": message})
+                save_file(model, msgs, effective_user)
+                context.bot.send_message(
+                    chat_id=chat_id,
+                    text=message,
+                    parse_mode=ParseMode.MARKDOWN,
+                )
             return
         if model in allowed_models_openai:
             if model!="gpt-3.5-turbo":
@@ -660,7 +667,7 @@ def handle_photo(update, context):
                 model=model,
                 contents=[
                     caption,
-                    types.Part.from_bytes(data=image_data, mime_type="image/jpeg"),
+                    Part.from_bytes(data=image_data, mime_type="image/jpeg"),
                 ],
             )
             message = response.text
